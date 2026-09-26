@@ -11,9 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.deps import require_role
 from backend.core.config import get_settings
 from backend.core.kill_switch import kill_switch
-from backend.core.models import OrderRequest, OrderResponse, OrderStatus
-from backend.database.models import OrderModel, UserModel
+from backend.core.models import (
+    AccountBalance,
+    OrderRequest,
+    OrderResponse,
+    OrderStatus,
+    Position,
+    RiskAction,
+    TradeDirection,
+)
+from backend.database.models import OrderModel, PositionModel, RiskEventModel, UserModel
 from backend.database.session import get_db
+from backend.risk.base import RiskContext
+from backend.risk.engine import risk_engine
 
 router = APIRouter(prefix="/orders", tags=["Orders & Execution"])
 
@@ -32,6 +42,7 @@ async def submit_order(
     1. If kill switch is active -> Rejects with 423 Locked.
     2. If live_execution=True while LIVE_TRADING=False -> Rejects with 403 Forbidden.
     3. Idempotent: rejects duplicate client_order_id.
+    4. Evaluates Pre-Trade Risk Engine constraints (1% trade risk, daily loss, drawdown, max positions, exposure).
     """
     # 1. Kill Switch Check
     if kill_switch.is_active:
@@ -59,13 +70,78 @@ async def submit_order(
             detail=f"Duplicate client order ID detected: {order_in.client_order_id}",
         )
 
-    # In Phase 2/paper mode, simulate clean acceptance
+    # 4. Pre-trade Risk Context Construction & Evaluation
+    pos_res = await db.execute(select(PositionModel))
+    db_positions = pos_res.scalars().all()
+
+    risk_positions = [
+        Position(
+            symbol=p.symbol,
+            direction=TradeDirection(p.direction),
+            quantity=p.quantity,
+            entry_price=p.entry_price,
+            current_price=p.current_price,
+            unrealized_pnl=p.unrealized_pnl,
+            realized_pnl=p.realized_pnl,
+            stop_loss=p.stop_loss,
+            take_profit=p.take_profit,
+        )
+        for p in db_positions
+    ]
+
+    total_realized_loss = sum(abs(p.realized_pnl) for p in db_positions if p.realized_pnl < 0)
+    total_unrealized_loss = sum(abs(p.unrealized_pnl) for p in db_positions if p.unrealized_pnl < 0)
+    baseline_equity = 100_000.0 + sum(p.realized_pnl + p.unrealized_pnl for p in db_positions)
+
+    risk_context = RiskContext(
+        account_balance=AccountBalance(
+            cash=100_000.0,
+            equity=max(baseline_equity, 10_000.0),
+            available_margin=max(baseline_equity, 10_000.0),
+        ),
+        open_positions=risk_positions,
+        daily_realized_loss=total_realized_loss,
+        daily_unrealized_loss=total_unrealized_loss,
+        peak_portfolio_equity=max(baseline_equity, 100_000.0),
+        current_portfolio_equity=max(baseline_equity, 10_000.0),
+    )
+
+    risk_decision = risk_engine.evaluate_order(order_in, risk_context)
+
+    if not risk_decision.is_approved or risk_decision.action == RiskAction.REJECT:
+        # Persist risk rejection event
+        risk_event = RiskEventModel(
+            rule_name=risk_decision.rule_name,
+            action=risk_decision.action.value,
+            reason=risk_decision.reason,
+            details={
+                "client_order_id": order_in.client_order_id,
+                "symbol": order_in.symbol,
+                "side": order_in.side.value,
+                "quantity": order_in.quantity,
+                "metrics": risk_decision.metrics,
+            },
+        )
+        db.add(risk_event)
+        await db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Pre-trade risk rejected: {risk_decision.reason}",
+        )
+
+    # If risk resized order quantity
+    effective_quantity = (
+        risk_decision.adjusted_quantity
+        if (risk_decision.action == RiskAction.MODIFY and risk_decision.adjusted_quantity)
+        else order_in.quantity
+    )
     db_order = OrderModel(
         client_order_id=order_in.client_order_id,
         symbol=order_in.symbol,
         side=order_in.side.value,
         order_type=order_in.order_type.value,
-        quantity=order_in.quantity,
+        quantity=effective_quantity,
         price=order_in.price,
         stop_price=order_in.stop_price,
         filled_quantity=0.0,

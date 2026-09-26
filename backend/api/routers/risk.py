@@ -13,8 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.deps import require_role
 from backend.core.config import get_settings
 from backend.core.kill_switch import kill_switch
-from backend.database.models import RiskEventModel, UserModel
+from backend.core.models import (
+    AccountBalance,
+    OrderRequest,
+    Position,
+    TradeDirection,
+)
+from backend.database.models import PositionModel, RiskEventModel, UserModel
 from backend.database.session import get_db
+from backend.risk.base import RiskContext, RiskDecision
+from backend.risk.engine import risk_engine
 
 router = APIRouter(prefix="/risk", tags=["Risk Management & Kill Switch"])
 
@@ -110,3 +118,48 @@ async def list_risk_events(
         }
         for e in events
     ]
+
+
+@router.post("/evaluate", response_model=RiskDecision, summary="Dry-run pre-trade risk evaluation")
+async def evaluate_order_risk(
+    order: OrderRequest,
+    db: AsyncSession = Depends(get_db),
+) -> RiskDecision:
+    """Pre-screens a potential order against all pre-trade risk controls without submitting it."""
+    pos_res = await db.execute(select(PositionModel))
+    db_positions = pos_res.scalars().all()
+
+    risk_positions = [
+        Position(
+            symbol=p.symbol,
+            direction=TradeDirection(p.direction),
+            quantity=p.quantity,
+            entry_price=p.entry_price,
+            current_price=p.current_price,
+            unrealized_pnl=p.unrealized_pnl,
+            realized_pnl=p.realized_pnl,
+            stop_loss=p.stop_loss,
+            take_profit=p.take_profit,
+        )
+        for p in db_positions
+    ]
+
+    total_realized_loss = sum(abs(p.realized_pnl) for p in db_positions if p.realized_pnl < 0)
+    total_unrealized_loss = sum(abs(p.unrealized_pnl) for p in db_positions if p.unrealized_pnl < 0)
+    baseline_equity = 100_000.0 + sum(p.realized_pnl + p.unrealized_pnl for p in db_positions)
+
+    context = RiskContext(
+        account_balance=AccountBalance(
+            cash=100_000.0,
+            equity=max(baseline_equity, 10_000.0),
+            available_margin=max(baseline_equity, 10_000.0),
+        ),
+        open_positions=risk_positions,
+        daily_realized_loss=total_realized_loss,
+        daily_unrealized_loss=total_unrealized_loss,
+        peak_portfolio_equity=max(baseline_equity, 100_000.0),
+        current_portfolio_equity=max(baseline_equity, 10_000.0),
+    )
+
+    return risk_engine.evaluate_order(order, context)
+
