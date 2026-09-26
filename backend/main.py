@@ -19,6 +19,7 @@ from backend.api.routers.orders import router as orders_router
 from backend.api.routers.portfolio import router as portfolio_router
 from backend.api.routers.positions import router as positions_router
 from backend.api.routers.risk import router as risk_router
+from backend.api.routers.strategies import router as strategies_router
 from backend.core.config import get_settings
 from backend.core.exceptions import (
     DuplicateOrderError,
@@ -172,6 +173,7 @@ app.include_router(orders_router, prefix=api_v1_prefix)
 app.include_router(positions_router, prefix=api_v1_prefix)
 app.include_router(portfolio_router, prefix=api_v1_prefix)
 app.include_router(risk_router, prefix=api_v1_prefix)
+app.include_router(strategies_router, prefix=api_v1_prefix)
 
 
 @app.get("/", tags=["Root"])
