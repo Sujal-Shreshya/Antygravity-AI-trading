@@ -55,9 +55,14 @@ class StrategyRegistry:
         return results
 
     @classmethod
+    def get(cls, strategy_id: str) -> type[BaseStrategy] | None:
+        """Returns the strategy class for a given identifier, or None."""
+        return STRATEGY_CATALOG.get(strategy_id.upper())
+
+    @classmethod
     def get_strategy(cls, strategy_id: str, params: dict[str, Any] | None = None) -> BaseStrategy:
         """Instantiates a strategy by identifier with optional custom parameters."""
-        strat_cls = STRATEGY_CATALOG.get(strategy_id.upper())
+        strat_cls = cls.get(strategy_id)
         if not strat_cls:
             raise ValueError(
                 f"Unknown strategy '{strategy_id}'. Available: {list(STRATEGY_CATALOG.keys())}"

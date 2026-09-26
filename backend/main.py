@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.api.routers.auth import router as auth_router
+from backend.api.routers.backtest import router as backtest_router
 from backend.api.routers.health import router as health_router
 from backend.api.routers.instruments import router as instruments_router
 from backend.api.routers.market_data import router as market_data_router
@@ -176,6 +177,7 @@ app.include_router(portfolio_router, prefix=api_v1_prefix)
 app.include_router(risk_router, prefix=api_v1_prefix)
 app.include_router(signals_router, prefix=api_v1_prefix)
 app.include_router(strategies_router, prefix=api_v1_prefix)
+app.include_router(backtest_router, prefix=api_v1_prefix)
 
 
 @app.get("/", tags=["Root"])

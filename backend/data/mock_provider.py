@@ -92,6 +92,38 @@ class MockDataProvider(BaseDataProvider):
 
         return candles
 
+    async def fetch_historical_candles(
+        self,
+        symbol: str,
+        timeframe: str | TimeFrame = TimeFrame.M15,
+        limit: int = 100,
+    ) -> list[OHLCVCandle]:
+        """Convenience method to generate the latest N candles for a symbol and timeframe."""
+        tf = TimeFrame(timeframe) if isinstance(timeframe, str) else timeframe
+        step = timedelta(minutes=15)
+        if tf == TimeFrame.M1:
+            step = timedelta(minutes=1)
+        elif tf == TimeFrame.M3:
+            step = timedelta(minutes=3)
+        elif tf == TimeFrame.M5:
+            step = timedelta(minutes=5)
+        elif tf == TimeFrame.M30:
+            step = timedelta(minutes=30)
+        elif tf == TimeFrame.H1:
+            step = timedelta(hours=1)
+        elif tf == TimeFrame.H4:
+            step = timedelta(hours=4)
+        elif tf == TimeFrame.D1:
+            step = timedelta(days=1)
+        elif tf == TimeFrame.W1:
+            step = timedelta(weeks=1)
+
+        end_time = datetime.now(UTC)
+        start_time = end_time - (step * (limit + 5))
+        candles = await self.get_historical_candles(symbol, tf, start_time, end_time)
+        return candles[-limit:] if len(candles) >= limit else candles
+
+
     async def subscribe(
         self,
         symbols: list[str],
