@@ -62,3 +62,11 @@ async def setup_test_database():
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     kill_switch.deactivate()
+
+
+@pytest.fixture
+async def test_db() -> AsyncGenerator[AsyncSession, None]:
+    """Provides an isolated database session for direct model manipulation in tests."""
+    async with test_sessionmaker() as session:
+        yield session
+
