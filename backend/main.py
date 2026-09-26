@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from backend.api.routers.auth import router as auth_router
 from backend.api.routers.health import router as health_router
 from backend.api.routers.instruments import router as instruments_router
+from backend.api.routers.market_data import router as market_data_router
 from backend.api.routers.orders import router as orders_router
 from backend.api.routers.portfolio import router as portfolio_router
 from backend.api.routers.positions import router as positions_router
@@ -166,6 +167,7 @@ api_v1_prefix = "/api/v1"
 app.include_router(health_router, prefix=api_v1_prefix)
 app.include_router(auth_router, prefix=api_v1_prefix)
 app.include_router(instruments_router, prefix=api_v1_prefix)
+app.include_router(market_data_router, prefix=api_v1_prefix)
 app.include_router(orders_router, prefix=api_v1_prefix)
 app.include_router(positions_router, prefix=api_v1_prefix)
 app.include_router(portfolio_router, prefix=api_v1_prefix)
