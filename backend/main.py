@@ -16,6 +16,7 @@ from backend.api.routers.backtest import router as backtest_router
 from backend.api.routers.health import router as health_router
 from backend.api.routers.instruments import router as instruments_router
 from backend.api.routers.market_data import router as market_data_router
+from backend.api.routers.monitoring import router as monitoring_router
 from backend.api.routers.orders import router as orders_router
 from backend.api.routers.paper import router as paper_router
 from backend.api.routers.portfolio import router as portfolio_router
@@ -180,6 +181,7 @@ app.include_router(risk_router, prefix=api_v1_prefix)
 app.include_router(signals_router, prefix=api_v1_prefix)
 app.include_router(strategies_router, prefix=api_v1_prefix)
 app.include_router(backtest_router, prefix=api_v1_prefix)
+app.include_router(monitoring_router, prefix=api_v1_prefix)
 
 
 @app.get("/", tags=["Root"])
