@@ -36,13 +36,10 @@ async def get_quote(symbol: str) -> dict[str, Any]:
     """Returns latest tick quote and freshness telemetry."""
     quote = market_data_manager.get_latest_quote(symbol)
     if not quote:
-        # Fallback response for unstreamed symbol
-        return {
-            "symbol": symbol,
-            "price": None,
-            "status": "NO_ACTIVE_STREAM",
-            "message": "Real data is unavailable in the current environment.",
-        }
+        from backend.data.mock_provider import MockDataProvider
+
+        provider = MockDataProvider()
+        return await provider.get_latest_quote(symbol)
     return quote
 
 

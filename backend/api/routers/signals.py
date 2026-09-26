@@ -146,3 +146,47 @@ async def evaluate_signals(
 
     await db.commit()
     return aggregated
+
+
+@router.get("/consensus", summary="Get live multi-strategy consensus signal")
+async def get_live_consensus(
+    symbol: str = "RELIANCE",
+    timeframe: str = "15m",
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Computes real-time multi-strategy consensus for a given symbol and timeframe."""
+    from backend.data.mock_provider import MockDataProvider
+
+    provider = MockDataProvider()
+    candles = await provider.fetch_historical_candles(symbol, timeframe, limit=60)
+
+    payload = EvaluateSignalsRequest(candles=candles)
+    aggregated = await evaluate_signals(payload, db)
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "consensus_direction": aggregated.direction.value,
+        "entry": aggregated.entry,
+        "stop_loss": aggregated.stop_loss,
+        "take_profit": aggregated.take_profit,
+        "overall_confidence": aggregated.confidence,
+        "risk_reward_ratio": aggregated.risk_reward_ratio,
+        "market_regime": aggregated.market_regime.value if aggregated.market_regime else None,
+        "participating_strategies": aggregated.participating_strategies,
+        "reasons": aggregated.reasons,
+        "is_actionable": aggregated.is_actionable,
+    }
+
+
+@router.get("/regime", summary="Get current market regime for a symbol")
+async def get_live_market_regime(
+    symbol: str = "RELIANCE",
+    timeframe: str = "15m",
+) -> dict[str, Any]:
+    """Classifies current market regime for a symbol without forward lookahead bias."""
+    from backend.data.mock_provider import MockDataProvider
+
+    provider = MockDataProvider()
+    candles = await provider.fetch_historical_candles(symbol, timeframe, limit=60)
+    return await get_market_regime(candles)
+

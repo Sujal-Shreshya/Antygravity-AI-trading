@@ -34,6 +34,7 @@ from backend.core.exceptions import (
 )
 from backend.core.kill_switch import kill_switch
 from backend.core.logging import configure_logging, correlation_id_ctx, get_logger
+from backend.core.security import rate_limiter
 from backend.database.session import close_db, init_db
 
 logger = get_logger("trading.main")
@@ -95,7 +96,19 @@ app.add_middleware(
 
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next) -> Response:
-    """Attaches a unique correlation ID to every incoming HTTP request for end-to-end tracing."""
+    """Attaches tracing correlation ID, applies rate limiting, and injects security headers."""
+    client_ip = request.client.host if request.client else "127.0.0.1"
+
+    # Rate limiting (bypass in test mode or health checks)
+    if not request.url.path.startswith(("/health", "/docs", "/openapi.json")):
+        allowed, remaining = rate_limiter.is_allowed(client_ip)
+        if not allowed:
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"error": "RateLimitExceeded", "message": "Too many requests. Please throttle your client."},
+                headers={"Retry-After": "60"},
+            )
+
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     token = correlation_id_ctx.set(request_id)
     start_time = time.perf_counter()
@@ -105,6 +118,10 @@ async def correlation_id_middleware(request: Request, call_next) -> Response:
         process_time = time.perf_counter() - start_time
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Process-Time"] = f"{process_time:.4f}s"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
     finally:
         correlation_id_ctx.reset(token)
