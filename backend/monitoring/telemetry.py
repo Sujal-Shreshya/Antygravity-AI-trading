@@ -39,6 +39,10 @@ class TelemetryRegistry:
     def record_counter(self, name: str, delta: int = 1) -> None:
         self.counters[name] = self.counters.get(name, 0) + delta
 
+    def increment(self, name: str, delta: int = 1) -> None:
+        """Alias for record_counter for standardized metrics incrementing."""
+        self.record_counter(name, delta)
+
     def record_latency(self, metric: str, duration_ms: float) -> None:
         if metric not in self.latencies:
             self.latencies[metric] = []

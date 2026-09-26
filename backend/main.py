@@ -26,9 +26,11 @@ from backend.api.routers.signals import router as signals_router
 from backend.api.routers.strategies import router as strategies_router
 from backend.core.config import get_settings
 from backend.core.exceptions import (
+    BrokerConnectionError,
     DuplicateOrderError,
     KillSwitchActiveError,
     LiveTradingBlockedError,
+    MarketClosedError,
     RiskLimitExceededError,
     TradingEngineError,
 )
@@ -166,6 +168,22 @@ async def duplicate_order_handler(request: Request, exc: DuplicateOrderError):
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={"error": "DuplicateOrder", "message": exc.message, "details": exc.details},
+    )
+
+
+@app.exception_handler(MarketClosedError)
+async def market_closed_handler(request: Request, exc: MarketClosedError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"error": "MarketClosed", "message": exc.message, "details": exc.details},
+    )
+
+
+@app.exception_handler(BrokerConnectionError)
+async def broker_connection_handler(request: Request, exc: BrokerConnectionError):
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content={"error": "BrokerConnectionError", "message": exc.message, "details": exc.details},
     )
 
 

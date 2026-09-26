@@ -1,15 +1,25 @@
 """
 Orders API router.
-Manages order submission, order status querying, and cancellation.
-Strictly routes through paper execution or validates live execution safety invariants.
+Manages order submission, order status querying, cancellation, live execution coordination, and emergency kill operations.
+Strictly routes through paper execution or validates live execution fail-closed safety invariants.
 """
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import require_role
-from backend.core.config import get_settings
+from backend.core.exceptions import (
+    BrokerConnectionError,
+    DuplicateOrderError,
+    KillSwitchActiveError,
+    LiveTradingBlockedError,
+    MarketClosedError,
+    RiskLimitExceededError,
+)
 from backend.core.kill_switch import kill_switch
 from backend.core.models import (
     AccountBalance,
@@ -22,10 +32,41 @@ from backend.core.models import (
 )
 from backend.database.models import OrderModel, PositionModel, RiskEventModel, UserModel
 from backend.database.session import get_db
+from backend.execution.coordinator import live_execution_coordinator
 from backend.risk.base import RiskContext
 from backend.risk.engine import risk_engine
 
 router = APIRouter(prefix="/orders", tags=["Orders & Execution"])
+
+
+class EmergencyKillRequest(BaseModel):
+    reason: str = Field(default="Manual Operator Kill Triggered", min_length=3)
+
+
+@router.get("/readiness", summary="Check live trading readiness")
+async def check_live_readiness(
+    current_user: UserModel = Depends(require_role(["ADMIN", "OPERATOR", "VIEWER"])),
+) -> dict[str, Any]:
+    """Inspects all 7 safety gates to determine live execution readiness."""
+    return live_execution_coordinator.check_live_readiness()
+
+
+@router.post(
+    "/emergency-kill",
+    status_code=status.HTTP_200_OK,
+    summary="Trigger emergency kill switch and cancel active orders",
+)
+async def emergency_kill(
+    request: EmergencyKillRequest,
+    current_user: UserModel = Depends(require_role(["ADMIN"])),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Globally engages emergency kill switch and cancels all open working orders."""
+    return await live_execution_coordinator.execute_emergency_kill(
+        reason=request.reason,
+        operator_id=current_user.email,
+        db=db,
+    )
 
 
 @router.post(
@@ -38,12 +79,35 @@ async def submit_order(
 ) -> OrderResponse:
     """
     Submits an order.
-    Enforces that:
-    1. If kill switch is active -> Rejects with 423 Locked.
-    2. If live_execution=True while LIVE_TRADING=False -> Rejects with 403 Forbidden.
-    3. Idempotent: rejects duplicate client_order_id.
-    4. Evaluates Pre-Trade Risk Engine constraints (1% trade risk, daily loss, drawdown, max positions, exposure).
+    - If live_execution=True: Delegates to fail-closed LiveExecutionCoordinator (all 7 safety gates).
+    - If live_execution=False: Simulates order intake into paper queue after risk evaluation.
     """
+    # --------------------------------------------------------------------------
+    # Live Execution Flow: Fail-Closed Coordinator
+    # --------------------------------------------------------------------------
+    if order_in.live_execution:
+        try:
+            return await live_execution_coordinator.execute_live_order(
+                order=order_in,
+                db=db,
+                operator_id=current_user.email,
+            )
+        except LiveTradingBlockedError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message) from exc
+        except KillSwitchActiveError as exc:
+            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=exc.message) from exc
+        except BrokerConnectionError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from exc
+        except MarketClosedError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+        except RiskLimitExceededError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message) from exc
+        except DuplicateOrderError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
+
+    # --------------------------------------------------------------------------
+    # Paper Execution Flow: Risk Evaluation & Intake
+    # --------------------------------------------------------------------------
     # 1. Kill Switch Check
     if kill_switch.is_active:
         raise HTTPException(
@@ -51,15 +115,7 @@ async def submit_order(
             detail=f"Order submission blocked: Emergency kill switch is active. Reason: {kill_switch.get_status()['reason']}",
         )
 
-    # 2. Live Trading Guard
-    settings = get_settings()
-    if order_in.live_execution and not settings.LIVE_TRADING:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Live trading order rejected: System configuration has LIVE_TRADING=false.",
-        )
-
-    # 3. Duplicate Order Check
+    # 2. Duplicate Order Check
     existing_query = select(OrderModel).where(
         OrderModel.client_order_id == order_in.client_order_id
     )
@@ -70,7 +126,7 @@ async def submit_order(
             detail=f"Duplicate client order ID detected: {order_in.client_order_id}",
         )
 
-    # 4. Pre-trade Risk Context Construction & Evaluation
+    # 3. Pre-trade Risk Context Construction & Evaluation
     pos_res = await db.execute(select(PositionModel))
     db_positions = pos_res.scalars().all()
 
@@ -109,7 +165,6 @@ async def submit_order(
     risk_decision = risk_engine.evaluate_order(order_in, risk_context)
 
     if not risk_decision.is_approved or risk_decision.action == RiskAction.REJECT:
-        # Persist risk rejection event
         risk_event = RiskEventModel(
             rule_name=risk_decision.rule_name,
             action=risk_decision.action.value,
@@ -147,9 +202,9 @@ async def submit_order(
         filled_quantity=0.0,
         average_price=None,
         status=OrderStatus.SUBMITTED.value,
-        is_paper=not order_in.live_execution,
+        is_paper=True,
         strategy_id=order_in.strategy_id,
-        broker_message="Order accepted into execution queue",
+        broker_message="Order accepted into paper execution queue",
     )
     db.add(db_order)
     await db.commit()
