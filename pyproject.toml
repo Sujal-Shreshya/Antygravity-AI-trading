@@ -32,6 +32,7 @@ dependencies = [
     "email-validator>=2.0.0",
     "aiosqlite>=0.20.0",
     "tzdata>=2024.1",
+    "scikit-learn>=1.4.0",
 ]
 
 [project.optional-dependencies]

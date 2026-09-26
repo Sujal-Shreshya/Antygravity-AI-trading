@@ -4,46 +4,8 @@ Integration tests for FastAPI endpoints, database persistence, authentication, a
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.core.kill_switch import kill_switch
-from backend.database.models import Base
-from backend.database.session import get_db
 from backend.main import app
-
-# In-memory SQLite async engine for fast, isolated test suite
-_test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
-_test_sessionmaker = async_sessionmaker(
-    bind=_test_engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autoflush=False,
-)
-
-
-async def override_get_db():
-    async with _test_sessionmaker() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(autouse=True)
-async def setup_test_database():
-    """Setup clean tables before each test and tear down after."""
-    kill_switch.deactivate()
-    async with _test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with _test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    kill_switch.deactivate()
 
 
 @pytest.mark.asyncio
